@@ -1,8 +1,28 @@
+from scipy.signal import resample_poly
+from faster_whisper import WhisperModel
 import pyaudiowpatch as pyaudio
 import time
 import numpy as np
-from scipy.signal import resample_poly
-from faster_whisper import WhisperModel
+import asyncio
+import websockets
+
+connected_clients = set()
+
+async def handler(websocket):
+      connected_clients.add(websocket)
+
+      print("Next.js connected!")
+
+      try:
+            await websocket.wait_closed()
+      finally:
+            connected_clients.remove(websocket)
+            print("Next.js disconnected!")
+
+
+async def send_detection(result):
+      for websocket in connected_clients:
+            await websocket.send(result)
 
 
 p = pyaudio.PyAudio()
@@ -34,49 +54,70 @@ model = WhisperModel(
 print("Listening continuously...")
 print("Press Ctrl+C to stop.")
 
-try:
-    while True:
-        print("\nRecording for 5 seconds...")
+def detect_audio():
+      print("\nRecording for 5 seconds...")
 
-        frames = []
-        start_time = time.time()
+      frames = []
+      start_time = time.time()
 
-        while time.time() - start_time < 5:
+      while time.time() - start_time < 5:
             data = stream.read(1024)
             frames.append(data)
 
-        print("Audio captured.")
-        print("Converting audio...")
+      print("Audio captured.")
+      print("Converting audio...")
 
-        audio_bytes = b"".join(frames)
+      audio_bytes = b"".join(frames)
 
-        audio = np.frombuffer(
+      audio = np.frombuffer(
             audio_bytes,
             dtype=np.int16
-        )
+      )
 
-        audio = audio.reshape(-1, channels)
+      audio = audio.reshape(-1, channels)
 
-        audio = audio.mean(axis=1)
+      audio = audio.mean(axis=1)
 
-        audio = audio.astype(np.float32) / 32768.0
+      audio = audio.astype(np.float32) / 32768.0
 
-        audio = resample_poly(
+      audio = resample_poly(
             audio,
             16000,
             rate
-        )
+      )
 
-        print("Detecting language...")
+      print("Detecting language...")
 
-        segments, info = model.transcribe(
+      segments, info = model.transcribe(
             audio,
             vad_filter=True
-        )
+      )
 
-        print(f"Language: {info.language}")
-        print(f"Probability: {info.language_probability}")
+      print(f"Language: {info.language}")
+      print(f"Probability: {info.language_probability}")
 
+      is_japanese = info.language == 'ja'
+
+      if is_japanese:
+            return 'ja'
+      else:
+            return 'not_ja'
+            
+
+
+async def main():
+      async with websockets.serve(handler, "localhost", 8765):
+            print("WebSocket server running on ws://localhost:8765")
+            print("Listening continuously...")
+
+            while True:
+                  result = await asyncio.to_thread(detect_audio)
+                  await send_detection(result)
+
+
+try: 
+      asyncio.run(main())
+      
 except KeyboardInterrupt:
     print("\nStopped.")
 
