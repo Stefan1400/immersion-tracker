@@ -1,36 +1,53 @@
 from scipy.signal import resample_poly
 from faster_whisper import WhisperModel
 import pyaudiowpatch as pyaudio
-import time
-import numpy as np
+
 import asyncio
+import math
+import threading
+import time
+from collections import deque
+from queue import Queue, Empty
+
+import numpy as np
 import websockets
+
+
+# -------------------------
+# WebSocket state
+# -------------------------
 
 connected_clients = set()
 
+
 async def handler(websocket):
-      connected_clients.add(websocket)
+    connected_clients.add(websocket)
+    print("Next.js connected!")
 
-      print("Next.js connected!")
-
-      try:
-            await websocket.wait_closed()
-      finally:
-            connected_clients.remove(websocket)
-            print("Next.js disconnected!")
+    try:
+        await websocket.wait_closed()
+    finally:
+        connected_clients.discard(websocket)
+        print("Next.js disconnected!")
 
 
 async def send_detection(result):
-      for websocket in connected_clients:
-            await websocket.send(result)
+    for websocket in connected_clients.copy():
+        await websocket.send(result)
 
+
+# -------------------------
+# Audio setup
+# -------------------------
 
 p = pyaudio.PyAudio()
 
-device = p.get_device_info_by_index(14)
+device_index = 14
+device = p.get_device_info_by_index(device_index)
 
 channels = int(device["maxInputChannels"])
 rate = int(device["defaultSampleRate"])
+chunk_size = 1024
 
 print("Device:", device["name"])
 
@@ -39,9 +56,14 @@ stream = p.open(
     channels=channels,
     rate=rate,
     input=True,
-    input_device_index=14,
-    frames_per_buffer=1024,
+    input_device_index=device_index,
+    frames_per_buffer=chunk_size,
 )
+
+
+# -------------------------
+# Whisper setup
+# -------------------------
 
 print("Loading Whisper...")
 
@@ -51,77 +73,181 @@ model = WhisperModel(
     compute_type="int8"
 )
 
-print("Listening continuously...")
-print("Press Ctrl+C to stop.")
+
+# -------------------------
+# Shared state
+# -------------------------
+
+buffer_seconds = 5
+
+max_buffer_chunks = math.ceil(
+    buffer_seconds * rate / chunk_size
+)
+
+audio_buffer = deque(maxlen=max_buffer_chunks)
+
+buffer_lock = threading.Lock()
+buffer_ready = threading.Event()
+stop_event = threading.Event()
+
+detection_queue = Queue()
+
+
+# -------------------------
+# Audio capture thread
+# -------------------------
+
+def capture_audio():
+    print("Starting continuous audio capture...")
+
+    while not stop_event.is_set():
+        try:
+            data = stream.read(
+                chunk_size,
+                exception_on_overflow=False
+            )
+
+            with buffer_lock:
+                audio_buffer.append(data)
+
+                if len(audio_buffer) >= max_buffer_chunks:
+                    buffer_ready.set()
+
+        except Exception as error:
+            print("Audio capture error:", error)
+            break
+
+
+# -------------------------
+# Whisper detection thread
+# -------------------------
 
 def detect_audio():
-      print("\nRecording for 5 seconds...")
+    print("Waiting for 5 seconds of audio...")
 
-      frames = []
-      start_time = time.time()
+    buffer_ready.wait()
 
-      while time.time() - start_time < 5:
-            data = stream.read(1024)
-            frames.append(data)
+    print("5-second buffer ready.")
+    print("Starting language detection...")
 
-      print("Audio captured.")
-      print("Converting audio...")
+    while not stop_event.is_set():
 
-      audio_bytes = b"".join(frames)
+        # Take a snapshot of the latest 5 seconds.
+        with buffer_lock:
+            frames = list(audio_buffer)
 
-      audio = np.frombuffer(
+        audio_bytes = b"".join(frames)
+
+        # Convert bytes → NumPy audio.
+        audio = np.frombuffer(
             audio_bytes,
             dtype=np.int16
-      )
+        )
 
-      audio = audio.reshape(-1, channels)
+        audio = audio.reshape(-1, channels)
 
-      audio = audio.mean(axis=1)
+        # Convert stereo → mono.
+        audio = audio.mean(axis=1)
 
-      audio = audio.astype(np.float32) / 32768.0
+        # Convert int16 → float32.
+        audio = audio.astype(np.float32) / 32768.0
 
-      audio = resample_poly(
+        # Convert sample rate → 16 kHz.
+        audio = resample_poly(
             audio,
             16000,
             rate
-      )
+        )
 
-      print("Detecting language...")
+        print("\nAnalyzing latest 5 seconds...")
 
-      segments, info = model.transcribe(
+        segments, info = model.transcribe(
             audio,
             vad_filter=True
-      )
+        )
 
-      print(f"Language: {info.language}")
-      print(f"Probability: {info.language_probability}")
+        print(f"Language: {info.language}")
+        print(f"Probability: {info.language_probability}")
 
-      is_japanese = info.language == 'ja'
+        if info.language == "ja":
+            result = "ja"
+        else:
+            result = "not_ja"
 
-      if is_japanese:
-            return 'ja'
-      else:
-            return 'not_ja'
-            
+        detection_queue.put(result)
+
+        # Wait approximately one second before analyzing
+        # the next rolling 5-second window.
+        stop_event.wait(1)
+
+
+# -------------------------
+# WebSocket + detection
+# -------------------------
+
+def get_detection():
+    try:
+        return detection_queue.get(timeout=0.5)
+    except Empty:
+        return None
 
 
 async def main():
-      async with websockets.serve(handler, "localhost", 8765):
-            print("WebSocket server running on ws://localhost:8765")
-            print("Listening continuously...")
+    global capture_thread
+    global detection_thread
 
-            while True:
-                  result = await asyncio.to_thread(detect_audio)
-                  await send_detection(result)
+    async with websockets.serve(
+        handler,
+        "localhost",
+        8765
+    ):
+        print("WebSocket server running on ws://localhost:8765")
+        print("Listening continuously...")
+
+        capture_thread = threading.Thread(
+            target=capture_audio,
+            daemon=True
+        )
+
+        detection_thread = threading.Thread(
+            target=detect_audio,
+            daemon=True
+        )
+
+        capture_thread.start()
+        detection_thread.start()
+
+        while not stop_event.is_set():
+            result = await asyncio.to_thread(
+                get_detection
+            )
+
+            if result is not None:
+                await send_detection(result)
 
 
-try: 
-      asyncio.run(main())
-      
+# -------------------------
+# Start / shutdown
+# -------------------------
+
+capture_thread = None
+detection_thread = None
+
+try:
+    asyncio.run(main())
+
 except KeyboardInterrupt:
     print("\nStopped.")
 
 finally:
+    stop_event.set()
+
+    if capture_thread is not None:
+        capture_thread.join(timeout=1)
+
+    if detection_thread is not None:
+        detection_thread.join(timeout=1)
+
     stream.stop_stream()
     stream.close()
     p.terminate()
