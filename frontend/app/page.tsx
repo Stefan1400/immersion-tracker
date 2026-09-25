@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 
 export default function Home() {
-  const [isImmersing, setIsImmersing] = useState(false);
+  const [isImmersing, setIsImmersing] = useState(true);
+  const [totalImmersionTime, setTotalImmersionTime] = useState(0);
 
   useEffect(() => {
     const socket = new WebSocket("ws://localhost:8765");
@@ -15,8 +16,14 @@ export default function Home() {
     socket.onmessage = (event) => {
       console.log("Python:", event.data);
 
-      if (event.data === "ja") {
+      const data = JSON.parse(event.data);
+
+      const language = data.language;
+      const immersionTime = data.total_immersion_in_seconds;
+
+      if (language === "ja") {
         setIsImmersing(true);
+        setTotalImmersionTime(immersionTime);
       } else {
         setIsImmersing(false);
       }
@@ -32,15 +39,21 @@ export default function Home() {
   }, []);
   
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <h1 className="text-3xl">{isImmersing ? 'Immersing...' : 'Taking a break...'}</h1>
+    <div className={`${isImmersing ? 'bg-[#F0F0F0] text-[#171717]' : 'bg-[#0b0b0b] text-white'} transition-all duration-300 flex flex-1 w-full h-full flex-col items-center px-4`}>
+  <div className="flex-1" />
 
-        <div className="flex flex-col items-center justify-between">
-          <span>Today's Immersion Time</span>
-          <span>10:00</span>
-        </div>
-      </main>
-    </div>
+  <div className="flex flex-col items-center justify-between gap-3">
+    <span className="transition-all duration-300 text-sm sm:text-base">Today's Immersion Time</span>
+    {/* <h1 className="transition-all duration-300 text-6xl sm:text-7xl md:text-8xl font-semibold">1<span className="text-gray-400 text-6xl">hr</span> 25<span className="text-gray-400 text-6xl">min</span></h1> */}
+    <h1 className="transition-all duration-300 text-6xl sm:text-7xl md:text-8xl font-semibold">{totalImmersionTime}</h1>
+    
+  </div>
+
+  <div className="flex-1" />
+
+  <span className="transition-all duration-300 font-medium text-sm sm:text-base pb-10 sm:pb-14 md:pb-16">
+    {isImmersing ? 'Immersing...' : 'Taking a break...'}
+  </span>
+</div>
   );
 }

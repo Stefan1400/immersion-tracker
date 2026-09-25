@@ -11,6 +11,7 @@ from queue import Queue, Empty
 
 import numpy as np
 import websockets
+import json
 
 
 # -------------------------
@@ -91,7 +92,6 @@ buffer_ready = threading.Event()
 stop_event = threading.Event()
 
 detection_queue = Queue()
-
 
 # -------------------------
 # Audio capture thread
@@ -185,6 +185,11 @@ def detect_audio():
 # WebSocket + detection
 # -------------------------
 
+total_immersion_time = 0
+immersion_started_at = None
+is_immersing = False
+
+
 def get_detection():
     try:
         return detection_queue.get(timeout=0.5)
@@ -195,6 +200,9 @@ def get_detection():
 async def main():
     global capture_thread
     global detection_thread
+    global total_immersion_time
+    global immersion_started_at
+    global is_immersing
 
     async with websockets.serve(
         handler,
@@ -223,7 +231,42 @@ async def main():
             )
 
             if result is not None:
-                await send_detection(result)
+
+                if result == 'ja':
+                    if not is_immersing:
+                        is_immersing = True
+                        immersion_started_at = time.time()
+
+                elif result == 'not_ja':
+                    if is_immersing:
+                        now = time.time()
+
+                        total_immersion_time += (
+                            now - immersion_started_at
+                        )
+
+                        is_immersing = False
+                        immersion_started_at = None
+
+                current_immersion_time = total_immersion_time
+
+                if is_immersing:
+                    current_immersion_time += (
+                        time.time() - immersion_started_at
+                    )
+
+                print(
+                    f"total_immersion_time: "
+                    f"{current_immersion_time}"
+                )
+
+                await send_detection(json.dumps({
+                    'language': result,
+                    'total_immersion_in_seconds': int(
+                        current_immersion_time
+                    )
+                }))
+
 
 
 # -------------------------
