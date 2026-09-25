@@ -2,8 +2,43 @@
 
 import { useState, useEffect } from "react";
 
+function formatImmersionTime(seconds: number) {
+    const totalMinutes = Math.floor(seconds / 60);
+
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+
+    if (hours > 0 && minutes > 0) {
+        return (
+            <>
+                {hours}
+                <span className="text-gray-400 text-6xl">hr</span>
+                {minutes}
+                <span className="text-gray-400 text-6xl">min</span>
+            </>
+        );
+    }
+
+    if (hours > 0) {
+        return (
+            <>
+                {hours}
+                <span className="text-gray-400 text-6xl">hr</span>
+            </>
+        );
+    }
+
+    return (
+        <>
+            {minutes}
+            <span className="text-gray-400 text-6xl">min</span>
+        </>
+    );
+}
+
+
 export default function Home() {
-  const [isImmersing, setIsImmersing] = useState(true);
+  const [isImmersing, setIsImmersing] = useState(false);
   const [totalImmersionTime, setTotalImmersionTime] = useState(0);
 
   useEffect(() => {
@@ -44,8 +79,7 @@ export default function Home() {
 
   <div className="flex flex-col items-center justify-between gap-3">
     <span className="transition-all duration-300 text-sm sm:text-base">Today's Immersion Time</span>
-    {/* <h1 className="transition-all duration-300 text-6xl sm:text-7xl md:text-8xl font-semibold">1<span className="text-gray-400 text-6xl">hr</span> 25<span className="text-gray-400 text-6xl">min</span></h1> */}
-    <h1 className="transition-all duration-300 text-6xl sm:text-7xl md:text-8xl font-semibold">{totalImmersionTime}</h1>
+    <h1 className="transition-all duration-300 text-6xl sm:text-7xl md:text-8xl font-semibold">{formatImmersionTime(totalImmersionTime)}</h1>
     
   </div>
 
